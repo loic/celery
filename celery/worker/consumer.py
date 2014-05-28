@@ -504,19 +504,33 @@ class Connection(bootsteps.StartStopStep):
 
 class Events(bootsteps.StartStopStep):
     requires = (Connection, )
+    _tref = None
 
     def __init__(self, c, send_events=None, **kwargs):
         self.send_events = True
         self.groups = None if send_events else ['worker']
-        c.event_dispatcher = None
+        self.event_dispatcher = c.event_dispatcher = None
+        self.timer = c.timer
+
+    def register_timer(self):
+        if self._tref is not None:
+            self._tref.cancel()
+        self._tref = self.timer.call_repeatedly(1, self.periodic)
+
+    def periodic(self):
+        try:
+            self.event_dispatcher.connection.drain_events(timeout=1.0)
+        except:
+            pass
 
     def start(self, c):
         # flush events sent while connection was down.
         prev = self._close(c)
-        dis = c.event_dispatcher = c.app.events.Dispatcher(
+        dis = self.event_dispatcher = c.event_dispatcher = c.app.events.Dispatcher(
             c.connect(), hostname=c.hostname,
             enabled=self.send_events, groups=self.groups,
         )
+        self.register_timer()
         if prev:
             dis.extend_buffer(prev)
             dis.flush()
@@ -657,8 +671,7 @@ class Control(bootsteps.StartStopStep):
     requires = (Tasks, )
 
     def __init__(self, c, **kwargs):
-        self.is_green = c.pool is not None and c.pool.is_green
-        self.box = (pidbox.gPidbox if self.is_green else pidbox.Pidbox)(c)
+        self.box = pidbox.Pidbox(c)
         self.start = self.box.start
         self.stop = self.box.stop
         self.shutdown = self.box.shutdown
